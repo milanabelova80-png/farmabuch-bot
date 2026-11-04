@@ -35,7 +35,7 @@ ADMIN_IDS: List[int] = [int(x.strip()) for x in _admin_raw.split(",") if x.strip
 if 1154082726 not in ADMIN_IDS:
     ADMIN_IDS.append(1154082726)
 
-WEBAPP_CARDS_URL = os.getenv("WEBAPP_CARDS_URL", "https://farmabuch-quizlet.vercel.app")
+WEBAPP_CARDS_URL = os.getenv("WEBAPP_CARDS_URL", "https://milanabelova80-png.github.io/farmabuch-bot/quizlet/")
 DB_NAME = os.getenv("DATABASE_PATH", "farmabuch_progress.db")
 
 logging.basicConfig(
@@ -969,6 +969,9 @@ async def send_module_conspect(message: types.Message, mod_id: int):
             caption=f"📚 <b>Учебное пособие по Модулю {mod_id}:</b>\n<i>{MODULES[mod_id]}</i>",
             parse_mode=ParseMode.HTML,
         )
+    fp2 = os.path.join(base_dir, "books", f"mod_{mod_id}.2.pdf")
+    if os.path.exists(fp2):
+        await message.answer_document(document=FSInputFile(path=fp2, filename=f"FarmaBuch_Модуль_{mod_id}_ч2.pdf"))
 
 
 async def run_self_check_for_module(
