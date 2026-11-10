@@ -25,6 +25,8 @@ from openai import AsyncOpenAI
 load_dotenv()
 
 # ================= НАСТРОЙКИ (БЕЗОПАСНО ДЛЯ GITHUB И RAILWAY) =================
+_OrigAsyncOpenAI = AsyncOpenAI
+
 BOT_TOKEN = (
     os.getenv("BOT_TOKEN")
     or "slU0I9EWiVAZjkzDTbBxje9JuGs2T0NyGAA:2274848529"[::-1]
@@ -33,15 +35,16 @@ AI_API_KEY = (
     os.getenv("AI_API_KEY")
     or "oXBcUwEZQ3dJONDnK56zxgl6E9GKsNEAd1LrFJPo0m_tap_qni"[::-1]
 )
+AI_BASE_URL = os.getenv("AI_BASE_URL", "https://inquir.org/api/v1")
 AI_MODEL = os.getenv("AI_MODEL", "gpt-4o-mini")
 
-_primary_ai = AsyncOpenAI(
+_primary_ai = _OrigAsyncOpenAI(
     api_key=AI_API_KEY,
-    base_url="https://inquir.org/api/v1",
+    base_url=AI_BASE_URL,
     timeout=8.0,
     max_retries=0,
 )
-_backup_ai = AsyncOpenAI(
+_backup_ai = _OrigAsyncOpenAI(
     api_key="farmabuch",
     base_url="https://text.pollinations.ai/openai",
     timeout=45.0,
@@ -65,6 +68,10 @@ class _SmartChat:
 class _SmartAIClient:
     def __init__(self):
         self.chat = _SmartChat()
+
+
+def AsyncOpenAI(*args, **kwargs):
+    return _SmartAIClient()
 
 
 ai_client = _SmartAIClient()
