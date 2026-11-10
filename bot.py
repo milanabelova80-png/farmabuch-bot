@@ -25,7 +25,7 @@ from openai import AsyncOpenAI
 load_dotenv()
 
 # ================= НАСТРОЙКИ (БЕЗОПАСНО ДЛЯ GITHUB И RAILWAY) =================
-BOT_TOKEN = "slU0I9EWiVAZjkzDTbBxje9JuGs2T0NyGAA:2274848529"[::-1]
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 AI_API_KEY = "AvWutzCbo7tNfze64zAGWgvWYF3bydGWFIkvMouG8hTjluDQf6u9_ksg"[::-1]
 AI_BASE_URL = os.getenv("AI_BASE_URL", "https://api.groq.com/openai/v1")
 AI_MODEL = os.getenv("AI_MODEL", "llama-3.3-70b-versatile")
