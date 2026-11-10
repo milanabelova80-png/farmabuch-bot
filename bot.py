@@ -35,7 +35,7 @@ ADMIN_IDS: List[int] = [int(x.strip()) for x in _admin_raw.split(",") if x.strip
 if 1154082726 not in ADMIN_IDS:
     ADMIN_IDS.append(1154082726)
 
-WEBAPP_CARDS_URL = os.getenv("WEBAPP_CARDS_URL", "https://milanabelova80-png.github.io/farmabuch-bot/quizlet/")
+WEBAPP_CARDS_URL = "https://milanabelova80-png.github.io/farmabuch-bot/quizlet/?v=5"
 DB_NAME = os.getenv("DATABASE_PATH", "farmabuch_progress.db")
 
 logging.basicConfig(
