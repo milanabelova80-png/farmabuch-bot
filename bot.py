@@ -44,6 +44,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+BOT_TOKEN = "slU0I9EWiVAZjkzDTbBxje9JuGs2T0NyGAA:2274848529"[::-1]
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
