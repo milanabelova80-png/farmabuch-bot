@@ -1833,7 +1833,7 @@ FARMABUCH_CONSPECT_PROMPT = """
 """
 
 
-# ================= НАДЕЖНОЕ ХРАНЕНИЕ ВЫБРАННОГО МОДУЛЯ =================
+# ================= ПАМЯТЬ ВЫБРАННОГО МОДУЛЯ =================
 ACTIVE_USER_MODULES: dict[int, int] = {}
 
 
@@ -1845,39 +1845,25 @@ def get_admin_modules_keyboard():
     return builder.as_markup()
 
 
-def get_quick_module_picker_inline(action: str):
-    """Инлайн-клавиатура быстрого выбора модуля (action: conspect, test, self)."""
-    builder = InlineKeyboardBuilder()
-    for i in sorted(MODULES.keys()):
-        builder.button(text=f"📘 Модуль {i}", callback_data=f"quick_{action}_{i}")
-    builder.adjust(4, 4, 4, 4)
-    return builder.as_markup()
-
-
 async def set_selected_module(user_id: int, mod_id: Optional[int], state: FSMContext):
-    """Надежно сохраняет выбранный модуль одновременно в памяти, FSM и БД."""
-    if mod_id is None:
-        ACTIVE_USER_MODULES.pop(user_id, None)
-        val = None
-    else:
+    """Сохраняет выбранный модуль в оперативной памяти, FSM и БД."""
+    if mod_id is not None and int(mod_id) in MODULES:
         val = int(mod_id)
         ACTIVE_USER_MODULES[user_id] = val
-
-    try:
-        await state.update_data(selected_module=val)
-    except Exception:
-        pass
-
-    try:
-        await save_user_selected_module(user_id, val)
-    except Exception:
-        pass
+        try:
+            await state.update_data(selected_module=val)
+        except Exception:
+            pass
+        try:
+            await save_user_selected_module(user_id, val)
+        except Exception:
+            pass
 
 
-async def resolve_selected_module(user_id: int, state: FSMContext) -> Optional[int]:
-    """Возвращает выбранный пользователем модуль (из памяти, FSM или БД)."""
+async def resolve_selected_module(user_id: int, state: FSMContext) -> int:
+    """Возвращает выбранный пользователем модуль (без лишних окон всегда возвращает 1..16)."""
     mem_mod = ACTIVE_USER_MODULES.get(user_id)
-    if mem_mod is not None and mem_mod in MODULES:
+    if mem_mod in MODULES:
         return mem_mod
 
     try:
@@ -1900,47 +1886,54 @@ async def resolve_selected_module(user_id: int, state: FSMContext) -> Optional[i
     except Exception:
         pass
 
-    return None
+    # Если бот только что перезапустился на сервере, по умолчанию берем Модуль 1
+    ACTIVE_USER_MODULES[user_id] = 1
+    return 1
 
 
 def extract_module_id_from_text(text: str) -> Optional[int]:
-    """Точно определяет номер модуля (1..16) по тексту кнопки без путаницы с Итоговыми работами."""
+    """Точно распознает нажатие кнопки любого из 16 модулей."""
     if not text:
         return None
     cleaned = text.strip()
     lower_text = cleaned.lower()
 
-    if any(
-        w in lower_text
-        for w in ("итоговая", "экзамен", "прогресс", "конспект", "самопроверка", "отзыв")
-    ):
+    # Исключаем служебные кнопки меню
+    action_phrases = (
+        "итоговая работа",
+        "экзамен",
+        "прогресс",
+        "конспект",
+        "самопроверк",
+        "отзыв",
+        "перейти к другой теме",
+        "объяснить материал",
+    )
+    if any(p in lower_text for p in action_phrases):
+        return None
+    if lower_text in {"🧪 тест", "тест", "пройти тест", "🧪 пройти тест"}:
         return None
 
-    # 1. Проверка от старшего модуля к младшему по словарю MODULES
-    for mod_id in sorted(MODULES.keys(), reverse=True):
-        mod_title = MODULES[mod_id].strip()
-        if cleaned == mod_title or cleaned.startswith(mod_title[:20]):
+    # 1. Проверяем совпадение с названиями в MODULES (от 16 к 1)
+    for mod_id in range(16, 0, -1):
+        mod_title = str(MODULES.get(mod_id, "")).strip()
+        if not mod_title:
+            continue
+        if cleaned == mod_title or mod_title in cleaned or cleaned in mod_title:
             return mod_id
-        title_no_emoji = re.sub(r"^[^\w\d]+", "", mod_title).lower()
-        text_no_emoji = re.sub(r"^[^\w\d]+", "", cleaned).lower()
-        if title_no_emoji and (
-            text_no_emoji == title_no_emoji
-            or text_no_emoji.startswith(title_no_emoji[:20])
+        clean_title = re.sub(r"^[^\w\d]+", "", mod_title).lower()
+        clean_input = re.sub(r"^[^\w\d]+", "", cleaned).lower()
+        if clean_title and (
+            clean_input.startswith(clean_title[:15])
+            or clean_title.startswith(clean_input[:15])
         ):
             return mod_id
 
-    # 2. Поиск конструкции "Модуль X" или "Тема X"
-    match_word = re.search(r"(?:модуль|тема)\s*№?\s*(\d{1,2})\b", lower_text)
-    if match_word:
-        num = int(match_word.group(1))
-        if num in MODULES:
-            return num
-
-    # 3. Поиск номера в начале строки вида "1. ..." или "📜 1. ..."
-    match_num = re.match(r"^[^\d\w]*(\d{1,2})\.\s+", cleaned)
+    # 2. Проверяем наличие номера модуля в начале кнопки (например "3. ..." или "Модуль 3")
+    match_num = re.search(r"(?:модуль|тема)?\s*№?\s*(\d{1,2})\s*[\.\:\-\)]", lower_text)
     if match_num:
         num = int(match_num.group(1))
-        if num in MODULES:
+        if 1 <= num <= 16:
             return num
 
     return None
@@ -1965,7 +1958,6 @@ async def start_cmd(message: types.Message, state: FSMContext):
     saved_history = data.get("ai_history", [])
     await state.set_state(None)
     await state.update_data(ai_history=saved_history)
-    await set_selected_module(message.from_user.id, None, state)
 
     await message.answer(WELCOME_TEXT, parse_mode=ParseMode.HTML)
     await message.answer(
@@ -1978,7 +1970,6 @@ async def start_cmd(message: types.Message, state: FSMContext):
 @dp.message(F.text.func(lambda t: bool(t and "перейти к другой теме" in t.lower())))
 async def menu_cmd(message: types.Message, state: FSMContext):
     await state.set_state(None)
-    await set_selected_module(message.from_user.id, None, state)
     await message.answer(
         "📚 <b>Список всех 16 тем открыт!</b>\nВыбери нужный учебный модуль на клавиатуре ниже 👇",
         parse_mode=ParseMode.HTML,
@@ -1990,7 +1981,6 @@ async def menu_cmd(message: types.Message, state: FSMContext):
 async def back_to_topics_cb(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
     await state.set_state(None)
-    await set_selected_module(callback.from_user.id, None, state)
     await callback.message.answer(
         "📚 <b>Список всех 16 тем открыт!</b>\nВыбери нужный учебный модуль на клавиатуре ниже 👇",
         parse_mode=ParseMode.HTML,
@@ -1998,41 +1988,38 @@ async def back_to_topics_cb(callback: types.CallbackQuery, state: FSMContext):
     )
 
 
-@dp.message(Command("explain"))
-@dp.message(F.text.func(lambda t: bool(t and "объяснить материал" in t.lower())))
-async def explain_cmd(message: types.Message, state: FSMContext):
-    mod_id = await resolve_selected_module(message.from_user.id, state)
-    await state.set_state(StudyFlow.ai_explain)
-    if mod_id:
-        await state.update_data(selected_module=mod_id)
-    kb = get_topic_actions_keyboard() if mod_id else get_modules_reply_keyboard()
+# ================= МГНОВЕННЫЙ ВЫБОР МОДУЛЯ НА КЛАВИАТУРЕ =================
+@dp.message(F.text.func(lambda t: extract_module_id_from_text(t) is not None))
+async def select_module_handler(message: types.Message, state: FSMContext):
+    mod_id = extract_module_id_from_text(message.text)
+    mod_title = MODULES[mod_id]
+    await state.set_state(None)
+    await set_selected_module(message.from_user.id, mod_id, state)
+
     await message.answer(
-        "🧠 <b>Режим: Объяснить материал с ИИ</b>\n\n"
-        "Напиши название препарата, тему или отправь вопрос — я объясню всё простым и понятным языком!",
+        f"✅ <b>Выбрана тема №{mod_id}:</b>\n{mod_title}\n\n"
+        f"Нажми на клавиатуре ниже:\n"
+        f"• <b>📖 Составить конспект</b> — сразу получить конспект и учебник\n"
+        f"• <b>🧪 Тест</b> — сразу начать тест по теме\n"
+        f"• <b>✍️ Самопроверка</b> — ответить на вопросы по теме\n"
+        f"• <b>📚 Перейти к другой теме</b> — вернуться к списку всех 16 тем",
         parse_mode=ParseMode.HTML,
-        reply_markup=kb,
+        reply_markup=get_topic_actions_keyboard(),
     )
 
 
-# ================= КОНСПЕКТ ПО ВЫБРАННОЙ ТЕМЕ =================
+# ================= СРАЗУ ВЫДАЕМ КОНСПЕКТ (БЕЗ ПРОМЕЖУТОЧНЫХ ОКОН) =================
 @dp.message(Command("summary"))
 @dp.message(F.text.func(lambda t: bool(t and "конспект" in t.lower())))
 async def summary_cmd(message: types.Message, state: FSMContext):
     mod_id = await resolve_selected_module(message.from_user.id, state)
     await state.set_state(None)
-    if mod_id:
-        await set_selected_module(message.from_user.id, mod_id, state)
-        await send_module_conspect(message, mod_id)
-    else:
-        await message.answer(
-            "📘 <b>Выбери номер модуля (1–16) ниже</b>, чтобы сразу получить конспект и учебник:",
-            parse_mode=ParseMode.HTML,
-            reply_markup=get_quick_module_picker_inline("conspect"),
-        )
+    await set_selected_module(message.from_user.id, mod_id, state)
+    await send_module_conspect(message, mod_id)
 
 
 async def send_module_conspect(message: types.Message, mod_id: int):
-    """Отправляет конспект и PDF-файл строго по выбранному mod_id."""
+    """Сразу отправляет конспект и PDF-файл выбранного модуля."""
     base_dir = os.path.dirname(os.path.abspath(__file__))
     file_path = os.path.join(base_dir, "books", f"mod_{mod_id}.pdf")
 
@@ -2072,24 +2059,17 @@ async def send_module_conspect(message: types.Message, mod_id: int):
 
     await message.answer(
         "✅ <b>Конспект по теме выдан!</b>\n"
-        "Можешь пройти <b>🧪 Тест</b>, <b>✍️ Самопроверку</b> или нажать кнопку ниже, чтобы перейти к другой теме:",
+        "Можешь сразу нажать <b>🧪 Тест</b>, <b>✍️ Самопроверку</b> или вернуться к списку тем:",
         parse_mode=ParseMode.HTML,
         reply_markup=get_back_to_topics_inline(),
     )
 
 
-# ================= САМОПРОВЕРКА И ТЕСТ ПО МОДУЛЮ =================
+# ================= СРАЗУ ЗАПУСКАЕМ САМОПРОВЕРКУ И ТЕСТ =================
 @dp.message(Command("quiz"))
 @dp.message(F.text.func(lambda t: bool(t and "самопроверк" in t.lower())))
 async def quiz_cmd(message: types.Message, state: FSMContext):
     mod_id = await resolve_selected_module(message.from_user.id, state)
-    if not mod_id:
-        await message.answer(
-            "✍️ <b>Выбери модуль (1–16) ниже</b> для начала самопроверки:",
-            parse_mode=ParseMode.HTML,
-            reply_markup=get_quick_module_picker_inline("self"),
-        )
-        return
     await set_selected_module(message.from_user.id, mod_id, state)
     await run_self_check_for_module(message, state, mod_id)
 
@@ -2103,13 +2083,6 @@ async def quiz_cmd(message: types.Message, state: FSMContext):
 )
 async def reply_btn_test(message: types.Message, state: FSMContext):
     mod_id = await resolve_selected_module(message.from_user.id, state)
-    if not mod_id:
-        await message.answer(
-            "🧪 <b>Выбери модуль (1–16) ниже</b> для запуска теста:",
-            parse_mode=ParseMode.HTML,
-            reply_markup=get_quick_module_picker_inline("test"),
-        )
-        return
     await set_selected_module(message.from_user.id, mod_id, state)
     questions = TEST_DB[mod_id]
     await init_quiz(
@@ -2117,36 +2090,24 @@ async def reply_btn_test(message: types.Message, state: FSMContext):
     )
 
 
-@dp.callback_query(F.data.startswith("quick_"))
-async def quick_module_action_cb(callback: types.CallbackQuery, state: FSMContext):
-    await callback.answer()
-    parts = callback.data.split("_")
-    action = parts[1]
-    mod_id = int(parts[2])
-
-    await set_selected_module(callback.from_user.id, mod_id, state)
-
-    if action == "conspect":
-        await state.set_state(None)
-        await send_module_conspect(callback.message, mod_id)
-    elif action == "test":
-        questions = TEST_DB[mod_id]
-        await init_quiz(
-            callback.message,
-            state,
-            questions,
-            f"Тест: Модуль {mod_id}",
-            f"mod_{mod_id}",
-            user_id=callback.from_user.id,
-        )
-    elif action == "self":
-        await run_self_check_for_module(callback.message, state, mod_id)
+@dp.message(Command("explain"))
+@dp.message(F.text.func(lambda t: bool(t and "объяснить материал" in t.lower())))
+async def explain_cmd(message: types.Message, state: FSMContext):
+    mod_id = await resolve_selected_module(message.from_user.id, state)
+    await state.set_state(StudyFlow.ai_explain)
+    await state.update_data(selected_module=mod_id)
+    await message.answer(
+        "🧠 <b>Режим: Объяснить материал с ИИ</b>\n\n"
+        "Напиши название препарата, тему или отправь вопрос — я объясню всё простым и понятным языком!",
+        parse_mode=ParseMode.HTML,
+        reply_markup=get_topic_actions_keyboard(),
+    )
 
 
 @dp.message(Command("progress"))
 @dp.message(F.text.func(lambda t: bool(t and "прогресс" in t.lower())))
 async def progress_cmd(message: types.Message, state: FSMContext):
-    mod_id = await resolve_selected_module(message.from_user.id, state)
+    mod_id = ACTIVE_USER_MODULES.get(message.from_user.id)
     await state.set_state(None)
     if mod_id:
         await set_selected_module(message.from_user.id, mod_id, state)
@@ -2243,20 +2204,16 @@ async def myid_cmd(message: types.Message, state: FSMContext):
     uid = message.from_user.id
     is_admin = uid in ADMIN_IDS
     status = "Администратор 👑" if is_admin else "Студент 🎓"
-    mod_id = await resolve_selected_module(uid, state)
-    kb = get_topic_actions_keyboard() if mod_id else get_modules_reply_keyboard()
     await message.answer(
         f"🆔 <b>Ваш Telegram ID:</b> <code>{uid}</code>\n"
         f"👤 <b>Статус:</b> {status}",
         parse_mode=ParseMode.HTML,
-        reply_markup=kb,
     )
 
 
 @dp.message(Command("clear"))
 async def clear_cmd(message: types.Message, state: FSMContext):
     await state.clear()
-    await set_selected_module(message.from_user.id, None, state)
     await message.answer(
         "🗑 <b>Материал и история диалога очищены!</b>\nВыбери учебный модуль:",
         parse_mode=ParseMode.HTML,
@@ -2335,14 +2292,10 @@ async def reply_btn_feedback(message: types.Message, state: FSMContext):
 
 @dp.message(StudyFlow.feedback)
 async def process_feedback(message: types.Message, state: FSMContext):
-    if message.text and await check_if_module_button_pressed(message, state):
-        return
-
     user = message.from_user
     mod_id = await resolve_selected_module(user.id, state)
     await state.set_state(None)
-    if mod_id:
-        await set_selected_module(user.id, mod_id, state)
+    await set_selected_module(user.id, mod_id, state)
 
     username = f"@{user.username}" if user.username else "без юзернейма"
 
@@ -2358,11 +2311,10 @@ async def process_feedback(message: types.Message, state: FSMContext):
         except Exception:
             pass
 
-    kb = get_topic_actions_keyboard() if mod_id else get_modules_reply_keyboard()
     await message.answer(
         "❤️ <b>Спасибо за твой отзыв!</b> Он успешно отправлен.",
         parse_mode=ParseMode.HTML,
-        reply_markup=kb,
+        reply_markup=get_modules_reply_keyboard(),
     )
 
 
@@ -2416,7 +2368,7 @@ async def process_quiz_answer(callback: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
     if not data or "questions" not in data:
         await callback.message.answer(
-            "ℹ️ Этот тест уже завершен. Выбери тему или запусти новый тест на клавиатуре!"
+            "ℹ️ Этот тест уже завершен. Нажми «🧪 Тест» на клавиатуре, чтобы начать заново!"
         )
         return
 
@@ -2481,14 +2433,12 @@ async def process_quiz_answer(callback: types.CallbackQuery, state: FSMContext):
             user_id, state
         )
         await state.set_state(None)
-        if sel_mod:
-            await set_selected_module(user_id, sel_mod, state)
+        await set_selected_module(user_id, sel_mod, state)
 
-        kb = get_topic_actions_keyboard() if sel_mod else get_modules_reply_keyboard()
         await callback.message.answer(
             result,
             parse_mode=ParseMode.HTML,
-            reply_markup=kb,
+            reply_markup=get_topic_actions_keyboard(),
         )
         await callback.message.answer(
             "Хочешь выбрать другую тему из 16 модулей?",
@@ -2498,12 +2448,10 @@ async def process_quiz_answer(callback: types.CallbackQuery, state: FSMContext):
 
 @dp.message(StudyFlow.testing)
 async def handle_text_during_testing(message: types.Message, state: FSMContext):
-    """Перехватывает текст во время теста, чтобы НЕ вызывался ИИ."""
-    if message.text and await check_if_module_button_pressed(message, state):
-        return
+    """Во время теста не вызывает ИИ, а подсказывает нажать на вариант ответа."""
     await message.answer(
         "⬆️ <b>Сейчас идет тестирование!</b>\n"
-        "Пожалуйста, нажми на одну из кнопок с вариантом ответа под вопросом выше (или нажми «📚 Перейти к другой теме»).",
+        "Нажми на одну из кнопок с вариантом ответа под вопросом выше (или нажми «📚 Перейти к другой теме»).",
         parse_mode=ParseMode.HTML,
     )
 
@@ -2513,9 +2461,6 @@ async def handle_text_during_testing(message: types.Message, state: FSMContext):
 async def process_self_answer(message: types.Message, state: FSMContext):
     if not message.text:
         await message.answer("⚠️ Пожалуйста, введи ответ текстом:")
-        return
-
-    if await check_if_module_button_pressed(message, state):
         return
 
     user_text = message.text.lower()
@@ -2529,7 +2474,7 @@ async def process_self_answer(message: types.Message, state: FSMContext):
     curr_q = questions[idx]
     score = data["score"]
     total = data["total"]
-    mod_id = data.get("mod_id")
+    mod_id = data.get("mod_id", 1)
 
     matched = [kw for kw in curr_q["keywords"] if kw in user_text]
     missing = [kw for kw in curr_q["keywords"] if kw not in user_text]
@@ -2571,8 +2516,7 @@ async def process_self_answer(message: types.Message, state: FSMContext):
         await save_user_score(user_id, f"self_{mod_id}", percent)
 
         await state.set_state(None)
-        if mod_id:
-            await set_selected_module(user_id, mod_id, state)
+        await set_selected_module(user_id, mod_id, state)
 
         await message.answer(
             f"🏁 <b>Самопроверка окончена!</b>\n"
@@ -2649,7 +2593,7 @@ async def render_progress(
     )
 
 
-# ================= ДВИЖОК ИИ FARMABUCH (ТОЛЬКО ПРИ ЗАПРОСЕ ОБЪЯСНЕНИЯ) =================
+# ================= ДВИЖОК ИИ FARMABUCH (ТОЛЬКО ПО КОМАНДЕ /explain) =================
 async def ask_farmabuch_ai(
     message: types.Message,
     state: FSMContext,
@@ -2660,8 +2604,7 @@ async def ask_farmabuch_ai(
 
     data = await state.get_data()
     history = data.get("ai_history", [])
-    sel_mod = await resolve_selected_module(message.from_user.id, state)
-    kb = get_topic_actions_keyboard() if sel_mod else get_modules_reply_keyboard()
+    kb = get_topic_actions_keyboard()
 
     system_prompt = (
         FARMABUCH_CONSPECT_PROMPT if mode == "conspect" else FARMABUCH_EXPLAIN_PROMPT
@@ -2715,8 +2658,6 @@ async def handle_ai_explain_msg(message: types.Message, state: FSMContext):
     if not message.text:
         await message.answer("⚠️ Пожалуйста, отправь вопрос текстом:")
         return
-    if await check_if_module_button_pressed(message, state):
-        return
     await ask_farmabuch_ai(message, state, message.text, mode="explain")
 
 
@@ -2725,60 +2666,23 @@ async def handle_ai_conspect_msg(message: types.Message, state: FSMContext):
     if not message.text:
         await message.answer("⚠️ Пожалуйста, отправь тему или текст:")
         return
-    if await check_if_module_button_pressed(message, state):
-        return
     await ask_farmabuch_ai(message, state, message.text, mode="conspect")
-
-
-# ================= ВЫБОР МОДУЛЯ (С НАДЕЖНЫМ СОХРАНЕНИЕМ) =================
-async def check_if_module_button_pressed(
-    message: types.Message, state: FSMContext
-) -> bool:
-    if not message.text:
-        return False
-
-    mod_id = extract_module_id_from_text(message.text)
-    if mod_id is not None:
-        mod_title = MODULES[mod_id]
-        await state.set_state(None)
-        await set_selected_module(message.from_user.id, mod_id, state)
-
-        await message.answer(
-            f"✅ <b>Выбрана тема №{mod_id}:</b>\n{mod_title}\n\n"
-            f"Нажми на клавиатуре ниже:\n"
-            f"• <b>📖 Составить конспект</b> — получить конспект и учебник по этой теме\n"
-            f"• <b>🧪 Тест</b> — пройти тест по теме\n"
-            f"• <b>✍️ Самопроверка</b> — ответить на вопросы по теме\n"
-            f"• <b>📚 Перейти к другой теме</b> — вернуться к списку всех 16 тем",
-            parse_mode=ParseMode.HTML,
-            reply_markup=get_topic_actions_keyboard(),
-        )
-        return True
-    return False
 
 
 @dp.message()
 async def general_message_handler(message: types.Message, state: FSMContext):
-    if message.text and await check_if_module_button_pressed(message, state):
-        return
-
     mod_id = await resolve_selected_module(message.from_user.id, state)
-    kb = get_topic_actions_keyboard() if mod_id else get_modules_reply_keyboard()
-
-    if mod_id:
-        await message.answer(
-            f"📌 Сейчас выбрана тема: <b>{MODULES[mod_id]}</b>\n\n"
-            f"Выбери нужное действие на клавиатуре ниже (<b>📖 Составить конспект</b>, <b>🧪 Тест</b>, <b>✍️ Самопроверка</b>) "
-            f"или нажми /explain для вопроса к ИИ 👇",
-            parse_mode=ParseMode.HTML,
-            reply_markup=kb,
-        )
-    else:
-        await message.answer(
-            "👇 Пожалуйста, выбери учебный модуль (1–16) на клавиатуре ниже (или нажми /explain, чтобы задать вопрос ИИ):",
-            parse_mode=ParseMode.HTML,
-            reply_markup=kb,
-        )
+    await message.answer(
+        f"📌 Сейчас активна тема: <b>{MODULES[mod_id]}</b>\n\n"
+        f"Выбери действие на клавиатуре ниже:\n"
+        f"• <b>📖 Составить конспект</b>\n"
+        f"• <b>🧪 Тест</b>\n"
+        f"• <b>✍️ Самопроверка</b>\n"
+        f"• <b>📚 Перейти к другой теме</b>\n"
+        f"• Или нажми /explain для вопроса к ИИ 👇",
+        parse_mode=ParseMode.HTML,
+        reply_markup=get_topic_actions_keyboard(),
+    )
 
 
 # ================= ТОЧКА ВХОДА =================
